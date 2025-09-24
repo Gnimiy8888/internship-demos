@@ -1,0 +1,287 @@
+#oss拉取/上传通用工具脚本
+
+import json
+
+import cv2
+import numpy as np
+from io import BytesIO
+from .pcd import *
+import oss2
+import shutil
+import yaml
+from oss2.credentials import EnvironmentVariableCredentialsProvider
+import time
+
+class oss_tool(object):
+    def __init__(self, bucket_name='', end_point='',
+                 ACCESS_KEY='a6', SECRET_KEY=''):
+        if bucket_name != '' or end_point != '':
+            auth = oss2.Auth(ACCESS_KEY, SECRET_KEY)
+        else:
+            # auth = oss2.ProviderAuth(EnvironmentVariableCredentialsProvider())
+            auth = oss2.Auth(ACCESS_KEY, SECRET_KEY)
+        self.bucket = oss2.Bucket(auth, end_point, bucket_name)
+        self.prefix = f'oss://{bucket_name}/'
+    # 上传cv2的image，以png形式
+    def upload_image_png(self, image, object_name, compression_level=0):
+        # def upload_opencv_image_as_png(image, object_name, bucket, compression_level=3):
+        """
+        将OpenCV图像(numpy数组)以PNG无损格式上传到OSS
+
+        参数:
+            image: OpenCV图像(numpy数组)，BGR格式
+            object_name: OSS上的对象名称(包含路径)，建议以.png结尾
+            bucket: 已初始化的oss2.Bucket对象
+            compression_level: PNG压缩级别(0-9)，0是无压缩但最快，9是最大压缩但最慢
+
+        返回:
+            oss2.models.PutObjectResult对象
+
+        抛出:
+            ValueError: 如果图像编码失败
+            oss2.exceptions.OssError: OSS上传错误
+        """
+        if object_name.startswith(self.prefix):
+            object_name = object_name.lstrip(self.prefix)
+        try:
+            # 参数验证
+            if not isinstance(image, np.ndarray):
+                raise ValueError("输入图像必须是numpy数组")
+
+            if compression_level < 0 or compression_level > 9:
+                raise ValueError("压缩级别必须在0-9之间")
+
+            # 将OpenCV图像编码为PNG字节流
+            success, encoded_image = cv2.imencode(
+                '.png',
+                image,
+                [int(cv2.IMWRITE_PNG_COMPRESSION), compression_level]
+            )
+
+            if not success:
+                raise ValueError("无法将图像编码为PNG格式")
+
+            # 将编码后的图像转换为BytesIO对象
+            image_bytes = BytesIO(encoded_image.tobytes())
+
+            # 确保对象名以.png结尾
+            if not object_name.lower().endswith('.png'):
+                object_name += '.png'
+
+            # 上传到OSS
+            result = self.bucket.put_object(object_name, image_bytes)
+
+            # print(f"PNG图像上传成功，ETag: {result.etag}, 大小: {result.size}字节")
+            return result
+
+        except Exception as e:
+            print(f"上传PNG图像到OSS失败: {str(e)}")
+            raise
+    # 直接上传image对象
+    def upload_cv2_to_file(self,CV_image, path):
+        if path.startswith(self.prefix):
+            path = path.lstrip(self.prefix)
+        suffix = ''.join(['.', path.split('.')[-1]])
+        image_bytes = cv2.imencode(suffix, CV_image)[1].tobytes()
+        self.bucket.put_object(path, image_bytes)
+
+    def upload_OSS(self,oss_path, local_path):
+        if oss_path.startswith(self.prefix):
+            oss_path = oss_path.lstrip(self.prefix)
+        self.bucket.put_object_from_file(oss_path, local_path)
+
+    def get_object(self,oss_file_name):
+        if oss_file_name.startswith('oss://stardust-data/'):
+            oss_file_name = oss_file_name.lstrip('oss://stardust-data/')
+        object_stream = self.bucket.get_object(oss_file_name)
+        bytes_data = b''.join([chunk for chunk in object_stream])
+        return bytes_data
+
+    # region 流式下载，并传出字符串V2
+    def get_str(self,oss_file_name):
+        if oss_file_name.startswith('oss://stardust-data/'):
+            oss_file_name = oss_file_name.lstrip('oss://stardust-data/')
+        object_stream = self.bucket.get_object(oss_file_name)
+        bytes_data = b''.join([chunk for chunk in object_stream])
+        return str(bytes_data, 'utf-8')
+
+    # region 流式下载到本地 V2
+    def download_file(self,save_file_addr, oss_file_name):
+        if oss_file_name.startswith('oss://stardust-data/'):
+            oss_file_name = oss_file_name.lstrip('oss://stardust-data/')
+        object_stream = self.bucket.get_object(oss_file_name)
+        with open(save_file_addr, 'wb') as file:
+            # file.write(response.content
+            shutil.copyfileobj(object_stream, file)
+        return
+
+    def put_object(self,oss_file_name,bytes):
+        if oss_file_name.startswith('oss://stardust-data/'):
+            oss_file_name = oss_file_name.lstrip('oss://stardust-data/')
+        result = self.bucket.put_object(oss_file_name, bytes)
+
+    # region 流式下载，并传出字符串V2
+    def get_yaml(self, oss_file_name):
+        if oss_file_name.startswith('oss://stardust-data/'):
+            oss_file_name = oss_file_name.lstrip('oss://stardust-data/')
+        object_stream = self.bucket.get_object(oss_file_name)
+        with BytesIO() as buffer:
+            for chunk in object_stream:
+                buffer.write(chunk)
+            buffer.seek(0)  # 重置指针位置
+
+            # 解析YAML
+            try:
+                content = yaml.safe_load(buffer)
+                if not isinstance(content, dict):
+                    raise ValueError("YAML content is not a dictionary")
+                return content
+            except yaml.YAMLError as e:
+                # logger.error(f"YAML parsing failed: {str(e)}")
+                raise ValueError(f"Invalid YAML format: {str(e)}") from e
+
+    def get_json(self,oss_file_name):
+        if oss_file_name.startswith('oss://stardust-data/'):
+            oss_file_name = oss_file_name.lstrip('oss://stardust-data/')
+        info = self.get_str(oss_file_name)
+        data = json.loads(info)
+        return data
+
+    def get_cv2(self,oss_path):
+        if oss_path.startswith('oss://stardust-data/'):
+            oss_path = oss_path.lstrip('oss://stardust-data/')
+        object_stream = self.bucket.get_object(oss_path)
+
+        bytes_data = b''.join([chunk for chunk in object_stream])
+
+        # 使用BytesIO可以在内存中创建类文件对象
+        bytes_io = BytesIO(bytes_data)
+
+        # 将字节转换为NumPy数组
+        image_array = np.frombuffer(bytes_data, np.uint8)
+
+        # 使用imdecode函数从NumPy数组读取图片
+        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        return image
+
+
+    # region OSS库中文件遍历
+    def get_OSS_file_list(self,path='', suffix_name=''):
+        file_list = []
+        download_path = path
+        if not path.endswith('/'):
+            download_path = ''.join([path, '/'])  # 遍历的目标文件夹，以'/'结尾
+        if path.startswith('oss://stardust-data/'):
+            download_path = download_path.lstrip('oss://stardust-data/')
+        # 获取文件路径列表
+        for obj in oss2.ObjectIterator(self.bucket, prefix=download_path, delimiter='/'):
+            # for obj in oss2.ObjectIterator(bucket, prefix=download_path,delimiter=suffix_name):
+            # 通过is_prefix方法判断obj是否为文件夹。
+
+            if obj.key == download_path:
+                continue
+
+            if obj.is_prefix() and (suffix_name == ''):  # 判断obj为文件夹。
+                # print('directory: ' + obj.key)
+                file_list.append(obj.key)
+            else:  # 判断obj为文件。
+                # if DeBug:print('file: ' + obj.key)
+                if suffix_name != '':
+                    if obj.key.endswith(suffix_name):  # 判断文件格式
+                        file_list.append(obj.key)
+                else:
+                    if not obj.key.endswith('/'):  # 判断文件格式
+                        file_list.append(obj.key)
+        return file_list
+    # endregion
+
+    # region 递归遍历
+    def get_all_files_recursive(self, path='', 
+                               suffix_name='', include_directories=False):
+        """
+        递归遍历OSS目录下的所有文件
+        
+        Args:
+            path (str): OSS路径，
+            suffix_name (str): 文件后缀过滤，为空则不过滤
+            include_directories (bool): 是否在返回结果中包含目录，默认False
+            
+        Returns:
+            list: 所有文件路径构成的列表
+            
+        底层实现原理：
+        1. 使用oss2.ObjectIterator遍历指定前缀的所有对象
+        2. 通过递归调用处理子目录
+        3. 使用is_prefix()方法区分文件和目录
+        4. 根据参数决定是否包含目录在返回结果中
+        """
+        all_files = []
+        
+        # 标准化路径格式
+        download_path = path
+        if not path.endswith('/'):
+            download_path = ''.join([path, '/'])  # 遍历的目标文件夹，以'/'结尾
+        if path.startswith('oss://stardust-data/'):
+            download_path = download_path.lstrip('oss://stardust-data/')
+        
+        # 使用delimiter='/'只获取当前级别的项目，不递归
+        for obj in oss2.ObjectIterator(self.bucket, prefix=download_path, delimiter='/'):
+            # 跳过根目录本身
+            if obj.key == download_path:
+                continue
+            
+            if obj.is_prefix():  # 判断为目录
+                if include_directories:
+                    all_files.append(obj.key)
+                
+                # 递归遍历子目录
+                sub_files = self.get_all_files_recursive(
+                    path=obj.key, 
+                    suffix_name=suffix_name, 
+                    include_directories=include_directories
+                )
+                all_files.extend(sub_files)
+            else:  # 判断为文件
+                # 排除以'/'结尾的路径（这些是目录）
+                if obj.key.endswith('/'):
+                    continue
+                
+                # 应用文件后缀过滤
+                if suffix_name != '':
+                    if obj.key.endswith(suffix_name):
+                        all_files.append(obj.key)
+                else:
+                    all_files.append(obj.key)
+        
+        return all_files
+    
+    # endregion
+
+    # region 判断文件是否存在
+    def exist(self,oss_path):
+        if oss_path.startswith('oss://stardust-data/'):
+            oss_path = oss_path.lstrip('oss://stardust-data/')
+        return self.bucket.object_exists(oss_path)
+
+    def is_folder_exists(self,folder_path):
+        # 确保文件夹路径以 '/' 结尾
+        if not folder_path.endswith('/'):
+            folder_path += '/'
+        # 列举前缀下的对象（最多1个）
+        obj_list = self.bucket.list_objects(prefix=folder_path, delimiter='/', max_keys=1)
+        return any(obj_list.object_list) or any(obj_list.prefix_list)
+
+    # endregion
+
+def timing_logger(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        run_time = end_time - start_time
+        print(f"方法 {func.__name__} 运行时间: {run_time:.6f} 秒")
+        return {
+            "origin":result,
+            "run_time":run_time,
+        }
+    return wrapper

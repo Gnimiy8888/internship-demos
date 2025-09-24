@@ -1,0 +1,50 @@
+select
+  trim(battery_key_process_id) AS source_id,
+  '空调国际（上海）有限公司'  AS factory_name,
+  regexp_extract(vehicle_category_code, '(W\\d{2})', 1) AS product_vehicle_name,
+  product_name AS product_name,
+  trim(key_process_code) AS process_name,
+  trim(test_value) AS test_value,
+  CAST(time_stamp AS STRING) AS test_endtime,
+  trim(supplier_bar_code) AS product_part_code,
+  trim(product_bar_code) AS product_serial_num,
+  FROM_UNIXTIME(CAST(create_time AS BIGINT)) AS source_insert_time,
+  trim(test_lolim) AS test_lolim,
+  trim(test_hilim) AS test_hilim,
+  trim(test_unit) AS test_unit,
+  trim(test_description) AS test_description,
+  trim(test_target) AS test_target,
+  trim(group_name) AS group_name,
+  trim(REPLACE(key_process_code, ' ', '_')) AS step_group_name,
+  trim(
+    REPLACE(REPLACE(test_name, ' ', '_'), CHAR(31), '_')
+  ) test_name,
+  trim(factory_line) AS line_name,
+  test_status AS test_status,
+  '' AS fixture,
+  '' AS shift,
+  '' AS operator_name,
+  trim(revision) AS product_code,
+  '' AS groups_1,
+  '' AS groups_2,
+  '' AS group_index,
+  '' AS group_loopindex,
+  '' AS group_type,
+  '' AS group_moduletime,
+  '' AS group_totaltime,
+  '' AS group_endtime,
+  '' AS group_status,
+  '' AS test_duration,
+  trim(test_rule) AS test_rule,
+  trim(test_rule) AS test_datatype,
+  '' AS product_num,
+  CAST(CURRENT_TIMESTAMP() AS STRING) save_time,
+  hour AS source_hour,
+  supplier_code,
+  dt,
+  CAST(DATE(time_stamp) AS STRING) test_dt
+from
+  table1
+where
+  dt = '2025-07-30' -- dt = '${yyyy-MM-dd}'
+  AND supplier_code = '7CQ'

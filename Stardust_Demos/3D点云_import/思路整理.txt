@@ -1,0 +1,88 @@
+
+pointcloud sequence结构：
+    attachment type
+    attachment
+        pointcloud本身的数据，比如url，ego，ego heading
+        imagesource（点云相关的一系列2D图像）
+            第一张图像信息，可能对应车前方拍摄的照片。包括url，camera参数等等
+            第二张图像信息，可能对应车后方拍摄的照片，。。。。
+            。。。。
+    metadata
+
+
+原数据文件组织：
+2025-05-27_10-24-29-702
+    pose：车本身的位姿（position+heading），等同于点云本身的ego，egoheading那些？
+    vcu：车辆控制单元数据（不重要？）
+    rsidar：点云文件
+    其他.jpg: 各处相机的照片
+calibration
+    camera 
+        calib
+            一堆.yaml文件：image_width: 1920, image_height: 1080 → 对应标准结构里的 width, height； 
+            camera_matrix → 对应 camera.intrinsic.fx/fy/cx/cy; 
+            distortion_coefficients（OpenCV 5 参数：k1,k2,p1,p2,k3）→ 对应camera.radial.k1/k2/k3（k3=0；若标准有 k4–k6 可补 0）,camera.tangential.p1/p2, camera.skew 在 OpenCV 一般为 0，可填 0。
+            r_mat（3×3 旋转矩阵）、t_vec（1×3 平移向量）、r_vec（Rodrigues 旋转向量）这是相机外参。表示 相机坐标系 相对 标定参考坐标系 的姿态与位置。对应camera.position = {x: t_x, y: t_y, z: t_z}，camera.heading = {x,y,z,w}（把 r_mat 或 r_vec 转成四元数）。注意：需要确认参考坐标系与平台“点云原点/ego”的坐标系是否一致；若不一致，可能需要取逆变换或做轴向重映射（右手/左手、x/y/z 定义）。
+            camera_name: narrow_stereo可以映射到 imageSources[].name（例如 back/narrow_back），仅作标识。
+            相机类型看yaml的类型，如果是fisheye的就是fisheye，否则就是pinhole
+            例子eg
+            {
+            "name": "back",
+            "height": 1080,
+            "width": 1920,
+            "camera": {
+                "type": "PinHole",
+                "intrinsic": { "fx": 1203.3160, "fy": 1197.4840, "cx": 959.5, "cy": 539.5 },
+                "radial": { "k1": -0.411334991, "k2": 0.201286003, "k3": 0.0, "k4": 0.0, "k5": 0.0, "k6": 0.0 },
+                "tangential": { "p1": -0.00399499992, "p2": 0.00375799998 },
+                "skew": 0,
+                "position": { "x": t_x, "y": t_y, "z": t_z },      // 由 t_vec 直接或变换后填
+                "heading":  { "x": qx, "y": qy, "z": qz, "w": qw }  // 由 r_mat / r_vec 转四元数
+            }
+            }
+            两个关键注意点：外参方向：确认 r_mat,t_vec 是 “世界→相机” 还是 “相机→世界”。如果文件给的是 T_world_cam，那 position/heading 直接取即可。如果是 T_cam_world，应先求逆再填。
+            坐标轴约定：平台/点云的坐标定义（x 前/后、y 左/右、z 上/下）若与 OpenCV 标定时不同，需要做轴变换，否则相机朝向会“看起来不对”。
+
+            fisheye文件夹里有剩下的fisheye相机的内参和外参，格式与上面类似。
+        .isi_s3_dir
+        data.txt
+    lidar （暂时用不到）
+    rslidar （暂时用不到）
+
+总结：
+可直接运行的“带 AK/SK、从阿里云 OSS 拉取并解析、生成完整 JSONL”的脚本。要点：
+
+读取 OSS：用 oss2（需要填 AK/SK/Endpoint/Bucket）。
+
+按帧名匹配：.pcd ↔ pose/同名.txt ↔ 所有 img_*/同名.jpg
+
+coordinate.ego / egoHeading：从 pose 的 4×4 矩阵解析（旋转矩阵→四元数，平移向量）。
+
+imageSources[].camera：从校准 YAML 完整解析（无默认值）：
+
+type：若目录名以 _fisheye 结尾，则到 calibration/camera/calib/fisheye/<name>.yaml；否则到 calibration/camera/calib/<name>.yaml（<name>与目录名一致或做数字规整，例如 img_front_120_fisheye → front_fisheye）。
+
+intrinsic：由 camera_matrix 解析。
+
+radial / tangential：由 distortion_coefficients 解析（pinhole: k1,k2,p1,p2,k3；fisheye: k1..k4，p1=p2=0）。
+
+position / heading：由 t_vec、r_mat（或 r_vec）解析，heading 为四元数。
+
+height / width：由 image_height / image_width 解析。
+
+任何关键字段缺失的相机/帧将被跳过（不写入 JSONL），保证结果全都来自文件、无默认值。
+
+
+代码：
+OSS 文件拉取（通过 oss:// 路径下载本地）
+
+相机标定文件（yaml/json）解析
+
+点云文件（pcd/bin）读取
+
+图片文件（jpg/png）读取并匹配帧号
+
+Pose 文件（txt/json）读取并校对
+
+最终写入 jsonl（严格保证：有图 + 有 pose + 有标定 才写入）
+
